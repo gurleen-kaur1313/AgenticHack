@@ -81,7 +81,8 @@ type AgentOutput = {
   insight: string;
 };
 
-const stressTerms = ["overwhelmed", "panic", "can't sleep", "cant sleep", "anxious", "burnout"];
+const MIN_WORDS_TO_ANALYZE = 5;
+const TYPING_DEBOUNCE_MS = 2500;
 
 const initialAgents: DemoAgent[] = [
   {
@@ -153,7 +154,6 @@ export default function Home() {
   });
   const [trendData, setTrendData] = useState<MoodPoint[]>(moodTrends);
   const [workflowActive, setWorkflowActive] = useState(false);
-  const [autoTriggered, setAutoTriggered] = useState(false);
   const timersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
 
   const wordCount = useMemo(() => journalText.trim().split(/\s+/).filter(Boolean).length, [journalText]);
@@ -161,7 +161,7 @@ export default function Home() {
   const activeMinutes = Math.max(1 / 60, sessionSeconds / 60);
   const typingSpeed = Math.round(journalText.length / 5 / activeMinutes);
   const idleSeconds = Math.max(0, Math.floor((now - lastInputAt) / 1000));
-  const containsStressSignal = stressTerms.some((term) => journalText.toLowerCase().includes(term));
+  const hasEnoughContent = wordCount >= MIN_WORDS_TO_ANALYZE;
   const riskLevel = output.risk;
   const monitoringMode = riskLevel === "high" || riskLevel === "critical" ? "High attention" : "Elevated";
 
@@ -360,7 +360,7 @@ export default function Home() {
         }, 4550),
       );
     },
-    [addTimeline, deleteCount, idleSeconds, journalText, resetTimers, typingSpeed, updateAgent],
+    [addTimeline, deleteCount, idleSeconds, journalText, resetTimers, typingSpeed, updateAgent]
   );
 
   useEffect(() => {
@@ -368,16 +368,29 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    if (containsStressSignal && !autoTriggered && !workflowActive) {
-      setAutoTriggered(true);
-      void runWorkflow("auto");
-    }
+  // The last journal text that was sent to the pipeline
+  const lastAnalyzedTextRef = useRef("");
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    if (!containsStressSignal && autoTriggered) {
-      setAutoTriggered(false);
-    }
-  }, [autoTriggered, containsStressSignal, runWorkflow, workflowActive]);
+  useEffect(() => {
+    if (!hasEnoughContent) return;
+
+    // Clear any pending debounce when the user keeps typing
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+
+    debounceTimerRef.current = setTimeout(() => {
+      // Don't re-run if the text hasn't meaningfully changed since last analysis
+      if (journalText.trim() === lastAnalyzedTextRef.current) return;
+      if (workflowActive) return;
+
+      lastAnalyzedTextRef.current = journalText.trim();
+      void runWorkflow("auto");
+    }, TYPING_DEBOUNCE_MS);
+
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, [journalText, hasEnoughContent, workflowActive, runWorkflow]);
 
   useEffect(() => resetTimers, [resetTimers]);
 
@@ -587,40 +600,53 @@ export default function Home() {
               <CardHeader className="flex-row items-center justify-between space-y-0">
                 <div>
                   <CardTitle>Wellness Analytics</CardTitle>
-                  <p className="mt-1 text-xs text-slate-400">Mock trend stream</p>
+                  <p className="mt-1 text-xs text-slate-400">Scores update after each journal analysis</p>
                 </div>
                 <Gauge className="h-4 w-4 text-sky-300" />
               </CardHeader>
               <CardContent className="space-y-5">
                 <ScoreGrid output={output} />
-                <div className="h-48">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={trendData}>
-                      <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
-                      <XAxis dataKey="time" stroke="rgba(255,255,255,0.38)" tickLine={false} axisLine={false} />
-                      <YAxis stroke="rgba(255,255,255,0.38)" tickLine={false} axisLine={false} />
-                      <Tooltip content={<ChartTooltip />} />
-                      <Line type="monotone" dataKey="mood" stroke="#34d399" strokeWidth={2} dot={false} />
-                      <Line type="monotone" dataKey="stress" stroke="#a78bfa" strokeWidth={2} dot={false} />
-                      <Line type="monotone" dataKey="anxiety" stroke="#38bdf8" strokeWidth={2} dot={false} />
-                    </LineChart>
-                  </ResponsiveContainer>
+                <div>
+                  <div className="mb-2 flex items-center justify-between">
+                    <p className="text-xs font-medium text-slate-300">Score trends over session</p>
+                    <div className="flex items-center gap-3 text-[11px] text-slate-400">
+                      <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-400 inline-block" />Mood ↑ better</span>
+                      <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-violet-400 inline-block" />Stress ↑ worse</span>
+                      <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-sky-400 inline-block" />Anxiety ↑ worse</span>
+                    </div>
+                  </div>
+                  <div className="h-44">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={trendData}>
+                        <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
+                        <XAxis dataKey="time" stroke="rgba(255,255,255,0.38)" tickLine={false} axisLine={false} tick={{ fontSize: 10 }} />
+                        <YAxis stroke="rgba(255,255,255,0.38)" tickLine={false} axisLine={false} domain={[0, 100]} tick={{ fontSize: 10 }} tickFormatter={(v: number) => `${v}`} />
+                        <Tooltip content={<ChartTooltip />} />
+                        <Line type="monotone" dataKey="mood" name="Mood" stroke="#34d399" strokeWidth={2} dot={false} />
+                        <Line type="monotone" dataKey="stress" name="Stress" stroke="#a78bfa" strokeWidth={2} dot={false} />
+                        <Line type="monotone" dataKey="anxiety" name="Anxiety" stroke="#38bdf8" strokeWidth={2} dot={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
                 </div>
-                <div className="h-36">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={trendData}>
-                      <defs>
-                        <linearGradient id="stressArea" x1="0" x2="0" y1="0" y2="1">
-                          <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.5} />
-                          <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <XAxis dataKey="time" hide />
-                      <YAxis hide />
-                      <Tooltip content={<ChartTooltip />} />
-                      <Area type="monotone" dataKey="stress" stroke="#8b5cf6" fill="url(#stressArea)" strokeWidth={2} />
-                    </AreaChart>
-                  </ResponsiveContainer>
+                <div>
+                  <p className="mb-2 text-xs font-medium text-slate-300">Stress intensity over time</p>
+                  <div className="h-28">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={trendData}>
+                        <defs>
+                          <linearGradient id="stressArea" x1="0" x2="0" y1="0" y2="1">
+                            <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.5} />
+                            <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <XAxis dataKey="time" hide />
+                        <YAxis hide domain={[0, 100]} />
+                        <Tooltip content={<ChartTooltip />} />
+                        <Area type="monotone" dataKey="stress" name="Stress" stroke="#8b5cf6" fill="url(#stressArea)" strokeWidth={2} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -758,25 +784,104 @@ function AgentBadge({ status }: { status: DemoAgent["status"] }) {
   return <Badge variant="outline">idle</Badge>;
 }
 
+function scoreLabel(score: number, kind: "stress" | "anxiety" | "mood"): { text: string; color: string } {
+  if (kind === "mood") {
+    if (score >= 70) return { text: "Positive", color: "text-emerald-300" };
+    if (score >= 45) return { text: "Neutral", color: "text-sky-300" };
+    if (score >= 25) return { text: "Low", color: "text-amber-300" };
+    return { text: "Very Low", color: "text-red-300" };
+  }
+  // stress / anxiety: lower is better
+  if (score <= 30) return { text: "Low", color: "text-emerald-300" };
+  if (score <= 55) return { text: "Moderate", color: "text-amber-300" };
+  if (score <= 75) return { text: "High", color: "text-orange-300" };
+  return { text: "Critical", color: "text-red-300" };
+}
+
+function riskColor(risk: RiskLevel): string {
+  if (risk === "critical") return "text-red-300";
+  if (risk === "high") return "text-orange-300";
+  if (risk === "moderate") return "text-amber-300";
+  return "text-emerald-300";
+}
+
 function ScoreGrid({ output }: { output: AgentOutput }) {
-  const items = [
-    { label: "Stress", value: output.stress, icon: Flame, color: "text-violet-300" },
-    { label: "Anxiety", value: output.anxiety, icon: HeartPulse, color: "text-sky-300" },
-    { label: "Mood", value: output.mood, icon: Sparkles, color: "text-emerald-300" },
-    { label: "Risk", value: output.risk, icon: AlertTriangle, color: output.risk === "high" ? "text-red-300" : "text-amber-300" },
-  ];
+  const stressLbl = scoreLabel(output.stress, "stress");
+  const anxietyLbl = scoreLabel(output.anxiety, "anxiety");
+  const moodLbl = scoreLabel(output.mood, "mood");
 
   return (
-    <div className="grid grid-cols-2 gap-3">
-      {items.map((item) => (
-        <div key={item.label} className="rounded-lg border border-white/10 bg-black/25 p-3">
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            <item.icon className={cn("h-3.5 w-3.5", item.color)} />
-            <span>{item.label}</span>
+    <div className="space-y-2">
+      {/* Stress */}
+      <div className="rounded-lg border border-white/10 bg-black/25 p-3">
+        <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+          <div className="flex items-center gap-1.5">
+            <Flame className="h-3.5 w-3.5 text-violet-300" />
+            <span>Stress</span>
+            <span className="text-slate-600">· higher = worse</span>
           </div>
-          <p className="mt-2 text-xl font-semibold capitalize text-white">{item.value}</p>
+          <span className={cn("font-semibold", stressLbl.color)}>{stressLbl.text}</span>
         </div>
-      ))}
+        <div className="flex items-center gap-3">
+          <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
+            <div className="h-full rounded-full bg-violet-400 transition-all duration-700" style={{ width: `${output.stress}%` }} />
+          </div>
+          <span className="text-sm font-bold text-white w-10 text-right">{output.stress}<span className="text-xs text-slate-500">/100</span></span>
+        </div>
+      </div>
+
+      {/* Anxiety */}
+      <div className="rounded-lg border border-white/10 bg-black/25 p-3">
+        <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+          <div className="flex items-center gap-1.5">
+            <HeartPulse className="h-3.5 w-3.5 text-sky-300" />
+            <span>Anxiety</span>
+            <span className="text-slate-600">· higher = worse</span>
+          </div>
+          <span className={cn("font-semibold", anxietyLbl.color)}>{anxietyLbl.text}</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
+            <div className="h-full rounded-full bg-sky-400 transition-all duration-700" style={{ width: `${output.anxiety}%` }} />
+          </div>
+          <span className="text-sm font-bold text-white w-10 text-right">{output.anxiety}<span className="text-xs text-slate-500">/100</span></span>
+        </div>
+      </div>
+
+      {/* Mood */}
+      <div className="rounded-lg border border-white/10 bg-black/25 p-3">
+        <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+          <div className="flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5 text-emerald-300" />
+            <span>Mood</span>
+            <span className="text-slate-600">· higher = better</span>
+          </div>
+          <span className={cn("font-semibold", moodLbl.color)}>{moodLbl.text}</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
+            <div className="h-full rounded-full bg-emerald-400 transition-all duration-700" style={{ width: `${output.mood}%` }} />
+          </div>
+          <span className="text-sm font-bold text-white w-10 text-right">{output.mood}<span className="text-xs text-slate-500">/100</span></span>
+        </div>
+      </div>
+
+      {/* Risk */}
+      <div className="rounded-lg border border-white/10 bg-black/25 p-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5 text-xs text-slate-400">
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />
+            <span>Overall Risk</span>
+          </div>
+          <span className={cn("text-sm font-bold capitalize", riskColor(output.risk))}>{output.risk}</span>
+        </div>
+        <p className="mt-1 text-[11px] text-slate-500">
+          {output.risk === "critical" && "Immediate support recommended."}
+          {output.risk === "high" && "Active intervention recommended."}
+          {output.risk === "moderate" && "Mild support suggested."}
+          {output.risk === "low" && "Normal emotional range. No action needed."}
+        </p>
+      </div>
     </div>
   );
 }

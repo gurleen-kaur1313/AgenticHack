@@ -1,0 +1,16 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/mindmesh/.venv/bin/python",
+  "python.terminal.activateEnvironment": true,
+  "python.terminal.activateEnvInCurrentTerminal": true,
+  "terminal.integrated.defaultProfile.osx": "zsh (mindmesh)",
+  "terminal.integrated.profiles.osx": {
+    "zsh (mindmesh)": {
+      "path": "/bin/zsh",
+      "args": ["-i"],
+      "env": {
+        "VIRTUAL_ENV": "${workspaceFolder}/mindmesh/.venv",
+        "PATH": "${workspaceFolder}/mindmesh/.venv/bin:${env:PATH}"
+      }
+    }
+  }
+}
