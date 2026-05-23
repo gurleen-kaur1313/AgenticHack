@@ -49,6 +49,14 @@ def _init() -> None:
         _enabled = False
 
     if os.getenv("DD_LLMOBS_ENABLED", "0") == "1":
+        # Skip the openai-agents integration: our project has a local `agents/`
+        # package that shadows the real one and breaks ddtrace's auto-patching.
+        existing_patches = os.environ.get("DD_PATCH_MODULES", "")
+        if "openai_agents" not in existing_patches:
+            os.environ["DD_PATCH_MODULES"] = (
+                f"{existing_patches},openai_agents:false".lstrip(",")
+            )
+
         try:
             from ddtrace.llmobs import LLMObs  # type: ignore
 
