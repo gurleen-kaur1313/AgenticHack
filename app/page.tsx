@@ -101,7 +101,8 @@ type HistoryAnswer = {
   answer: string;
 };
 
-const MIN_WORDS_TO_ANALYZE = 5;
+/** Minimum words before Analyze is enabled (0 = any non-empty text). */
+const MIN_WORDS_TO_ANALYZE = 1;
 const TYPING_DEBOUNCE_MS = 1500;
 const initialTimelineTimestamp = "--:--:--";
 
@@ -153,6 +154,9 @@ export default function Home() {
   const [deleteCount, setDeleteCount] = useState(0);
   const [sleepHours, setSleepHours] = useState(5.5);
   const [lastInputAt, setLastInputAt] = useState(0);
+  const [firstKeystrokeAt, setFirstKeystrokeAt] = useState(0);
+  const [pauseCount, setPauseCount] = useState(0);
+  const [maxPauseMs, setMaxPauseMs] = useState(0);
   const [sessionStartedAt, setSessionStartedAt] = useState(0);
   const [now, setNow] = useState(0);
   const [agents, setAgents] = useState<DemoAgent[]>(initialAgents);
@@ -187,8 +191,14 @@ export default function Home() {
   const wordCount = useMemo(() => journalText.trim().split(/\s+/).filter(Boolean).length, [journalText]);
   const sessionSeconds =
     now > 0 && sessionStartedAt > 0 ? Math.max(1, Math.floor((now - sessionStartedAt) / 1000)) : 0;
-  const activeMinutes = Math.max(1 / 60, sessionSeconds / 60);
-  const typingSpeed = Math.round(journalText.length / 5 / activeMinutes);
+  const typingWindowMs =
+    firstKeystrokeAt > 0 && lastInputAt > firstKeystrokeAt
+      ? Math.max(1000, lastInputAt - firstKeystrokeAt)
+      : 1000;
+  const typingSpeed =
+    journalText.length > 0
+      ? Math.round(journalText.length / 5 / (typingWindowMs / 60000))
+      : 0;
   const idleSeconds = Math.max(0, Math.floor((now - lastInputAt) / 1000));
   const hasEnoughContent = wordCount >= MIN_WORDS_TO_ANALYZE;
   const riskLevel = output.risk;
@@ -267,9 +277,9 @@ export default function Home() {
           {
             journal_text: liveJournalText,
             typing_speed: Math.max(20, typingSpeed),
-            pause_frequency: Math.min(20, Math.floor(idleSeconds / 2)),
+            pause_frequency: pauseCount,
             deletion_frequency: deleteCount,
-            inactivity_duration_ms: idleSeconds * 1000,
+            inactivity_duration_ms: maxPauseMs,
             burst_typing: deleteCount > 25 || typingSpeed > 160,
             client_timestamp: new Date().toISOString(),
           },
@@ -423,8 +433,9 @@ export default function Home() {
       addTimeline,
       deleteCount,
       hasEnoughContent,
-      idleSeconds,
       journalText,
+      maxPauseMs,
+      pauseCount,
       resetTimers,
       sessionId,
       typingSpeed,
@@ -520,8 +531,19 @@ export default function Home() {
   useEffect(() => resetTimers, [resetTimers]);
 
   const onJournalChange = (value: string) => {
+    const stamp = Date.now();
+    if (firstKeystrokeAt === 0 && value.length > 0) {
+      setFirstKeystrokeAt(stamp);
+    }
+    if (lastInputAt > 0 && stamp - lastInputAt > 2000) {
+      setPauseCount((c) => c + 1);
+    }
+    if (lastInputAt > 0) {
+      const gap = stamp - lastInputAt;
+      setMaxPauseMs((prev) => Math.max(prev, gap));
+    }
     setJournalText(value);
-    setLastInputAt(Date.now());
+    setLastInputAt(stamp);
   };
 
   return (
@@ -621,10 +643,17 @@ export default function Home() {
                 />
               </div>
 
+              <p className="text-xs text-slate-400">
+                {workflowActive
+                  ? "Analysis in progress…"
+                  : hasEnoughContent
+                    ? `${wordCount} word${wordCount === 1 ? "" : "s"} ready to analyze`
+                    : "Type in the journal box to enable analysis"}
+              </p>
               <Button
                 onClick={() => void runWorkflow()}
                 disabled={!hasEnoughContent || workflowActive}
-                className="w-full bg-gradient-to-r from-violet-400 via-sky-400 to-teal-300 text-slate-950 hover:opacity-90"
+                className="w-full bg-gradient-to-r from-violet-400 via-sky-400 to-teal-300 text-slate-950 hover:opacity-90 disabled:opacity-50"
               >
                 <Activity className="h-4 w-4" />
                 {workflowActive ? "Analyzing journal..." : "Analyze journal"}

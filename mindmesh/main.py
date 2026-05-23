@@ -18,7 +18,7 @@ app = FastAPI(title="MindMesh")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://10.16.157.74:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
