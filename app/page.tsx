@@ -40,6 +40,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { analyzeSignal, type PipelineResponse } from "@/lib/api";
 import { agents as mockAgents, interventionHistory, moodTrends } from "@/lib/mock-data";
 import type { AgentStatus, MoodPoint, RiskLevel } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -187,12 +188,12 @@ export default function Home() {
   }, []);
 
   const runWorkflow = useCallback(
-    (source: "auto" | "simulate") => {
+    async (source: "auto" | "simulate") => {
       resetTimers();
       setWorkflowActive(true);
       setAgents(initialAgents);
       const isSevere = source === "simulate" || journalText.toLowerCase().includes("panic");
-      const nextOutput: AgentOutput = {
+      const fallback: AgentOutput = {
         stress: isSevere ? 91 : 78,
         anxiety: isSevere ? 88 : 72,
         mood: isSevere ? 28 : 42,
@@ -217,7 +218,35 @@ export default function Home() {
           : "Journal tone and typing behavior show a stress spike above baseline. A short reset is recommended before continuing.",
       };
 
-      addTimeline("Orchestrator", source === "simulate" ? "Injected high-stress demo signal." : "Stress phrase detected in journal stream.", "risk");
+      addTimeline(
+        "Orchestrator",
+        source === "simulate" ? "Injected high-stress demo signal." : "Stress phrase detected in journal stream.",
+        "risk",
+      );
+
+      const effectiveJournalText =
+        journalText.trim().length > 0
+          ? journalText
+          : "I haven't slept in 3 days and I can't handle this anymore";
+
+      let pipeline: PipelineResponse | null = null;
+      try {
+        pipeline = await analyzeSignal({
+          journal_text: effectiveJournalText,
+          typing_speed: Math.max(20, typingSpeed),
+          pause_frequency: Math.min(20, Math.floor(idleSeconds / 2)),
+          deletion_frequency: deleteCount,
+          inactivity_duration_ms: idleSeconds * 1000,
+          burst_typing: deleteCount > 25 || typingSpeed > 160,
+          client_timestamp: new Date().toISOString(),
+        });
+        addTimeline("Backend", "Pipeline response received from /analyze.", "complete");
+      } catch (error) {
+        console.warn("MindMesh backend unreachable, using mock output", error);
+        addTimeline("Backend", "Backend unreachable — using local mock pipeline.", "neutral");
+      }
+
+      const nextOutput = mergePipelineWithFallback(pipeline, fallback);
 
       const steps: Array<{
         delay: number;
@@ -331,7 +360,7 @@ export default function Home() {
         }, 4550),
       );
     },
-    [addTimeline, journalText, resetTimers, updateAgent],
+    [addTimeline, deleteCount, idleSeconds, journalText, resetTimers, typingSpeed, updateAgent],
   );
 
   useEffect(() => {
@@ -342,7 +371,7 @@ export default function Home() {
   useEffect(() => {
     if (containsStressSignal && !autoTriggered && !workflowActive) {
       setAutoTriggered(true);
-      runWorkflow("auto");
+      void runWorkflow("auto");
     }
 
     if (!containsStressSignal && autoTriggered) {
@@ -442,7 +471,7 @@ export default function Home() {
               </div>
 
               <Button
-                onClick={() => runWorkflow("simulate")}
+                onClick={() => void runWorkflow("simulate")}
                 className="w-full bg-gradient-to-r from-violet-400 via-sky-400 to-teal-300 text-slate-950 hover:opacity-90"
               >
                 <Flame className="h-4 w-4" />
@@ -784,4 +813,60 @@ function formatDuration(seconds: number) {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
   return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+}
+
+function mergePipelineWithFallback(
+  pipeline: PipelineResponse | null,
+  fallback: AgentOutput,
+): AgentOutput {
+  if (!pipeline || !pipeline.emotion || !pipeline.risk) {
+    return fallback;
+  }
+
+  const intervention = pipeline.intervention
+    ? mapIntervention(pipeline.intervention, fallback.intervention)
+    : null;
+
+  const insight = pipeline.reflection?.insight?.trim().length
+    ? pipeline.reflection.insight
+    : fallback.insight;
+
+  return {
+    stress: pipeline.emotion.stress_score,
+    anxiety: pipeline.emotion.anxiety_score,
+    mood: pipeline.emotion.mood_score,
+    risk: pipeline.risk.risk_level,
+    intervention,
+    insight,
+  };
+}
+
+function mapIntervention(
+  payload: NonNullable<PipelineResponse["intervention"]>,
+  fallback: InterventionCard | null,
+): InterventionCard {
+  const minutes = parseMinutes(payload.duration) ?? fallback?.minutes ?? 2;
+  const title = humanizeKey(payload.intervention);
+  const protocol = payload.workflow.length > 0 ? payload.workflow.map(humanizeKey).join(" + ") : title;
+
+  return {
+    id: `${payload.intervention}-${payload.priority}`,
+    title,
+    body: `Autonomous planner selected ${title.toLowerCase()} (priority: ${payload.priority}).`,
+    protocol,
+    minutes,
+  };
+}
+
+function humanizeKey(key: string): string {
+  return key
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function parseMinutes(duration: string): number | null {
+  const match = duration.match(/(\d+(?:\.\d+)?)/);
+  return match ? Math.max(1, Math.round(Number(match[1]))) : null;
 }
