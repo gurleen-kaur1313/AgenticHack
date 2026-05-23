@@ -40,7 +40,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { analyzeSignal, type PipelineResponse } from "@/lib/api";
+import {
+  analyzeSignal,
+  fetchAnalyticsSummary,
+  fetchHealth,
+  type AnalyticsSummary,
+  type IntegrationStatus,
+  type PipelineResponse,
+  type SensoEnrichment,
+} from "@/lib/api";
 import { agents as mockAgents, interventionHistory, moodTrends } from "@/lib/mock-data";
 import type { AgentStatus, MoodPoint, RiskLevel } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -154,6 +162,10 @@ export default function Home() {
   });
   const [trendData, setTrendData] = useState<MoodPoint[]>(moodTrends);
   const [workflowActive, setWorkflowActive] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [integrations, setIntegrations] = useState<IntegrationStatus | null>(null);
+  const [senso, setSenso] = useState<SensoEnrichment | null>(null);
+  const [analyticsSummary, setAnalyticsSummary] = useState<AnalyticsSummary | null>(null);
   const timersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
 
   const wordCount = useMemo(() => journalText.trim().split(/\s+/).filter(Boolean).length, [journalText]);
@@ -231,16 +243,41 @@ export default function Home() {
 
       let pipeline: PipelineResponse | null = null;
       try {
-        pipeline = await analyzeSignal({
-          journal_text: effectiveJournalText,
-          typing_speed: Math.max(20, typingSpeed),
-          pause_frequency: Math.min(20, Math.floor(idleSeconds / 2)),
-          deletion_frequency: deleteCount,
-          inactivity_duration_ms: idleSeconds * 1000,
-          burst_typing: deleteCount > 25 || typingSpeed > 160,
-          client_timestamp: new Date().toISOString(),
-        });
+        pipeline = await analyzeSignal(
+          {
+            journal_text: effectiveJournalText,
+            typing_speed: Math.max(20, typingSpeed),
+            pause_frequency: Math.min(20, Math.floor(idleSeconds / 2)),
+            deletion_frequency: deleteCount,
+            inactivity_duration_ms: idleSeconds * 1000,
+            burst_typing: deleteCount > 25 || typingSpeed > 160,
+            client_timestamp: new Date().toISOString(),
+          },
+          sessionId ?? undefined,
+        );
         addTimeline("Backend", "Pipeline response received from /analyze.", "complete");
+        if (pipeline.session_id && pipeline.session_id !== sessionId) {
+          setSessionId(pipeline.session_id);
+        }
+        if (pipeline.senso_enrichment) {
+          setSenso(pipeline.senso_enrichment);
+          addTimeline(
+            "Senso",
+            `Behavior enriched: ${pipeline.senso_enrichment.cadence}, sleep ${pipeline.senso_enrichment.sleep_consistency}.`,
+            "complete",
+          );
+        }
+        try {
+          const summary = await fetchAnalyticsSummary(pipeline.session_id);
+          setAnalyticsSummary(summary);
+          addTimeline(
+            "ClickHouse",
+            `Analytics summary refreshed (${summary.total_sessions} events, trend ${summary.trend_direction}).`,
+            "complete",
+          );
+        } catch (summaryError) {
+          console.warn("analytics summary fetch failed", summaryError);
+        }
       } catch (error) {
         console.warn("MindMesh backend unreachable, using mock output", error);
         addTimeline("Backend", "Backend unreachable — using local mock pipeline.", "neutral");
@@ -360,12 +397,35 @@ export default function Home() {
         }, 4550),
       );
     },
-    [addTimeline, deleteCount, idleSeconds, journalText, resetTimers, typingSpeed, updateAgent]
+    [addTimeline, deleteCount, idleSeconds, journalText, resetTimers, sessionId, typingSpeed, updateAgent]
   );
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const health = await fetchHealth();
+        if (!cancelled) {
+          setIntegrations(health.integrations);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setIntegrations({ clickhouse: false, datadog: false, senso: false });
+        }
+        console.warn("health check failed", error);
+      }
+    };
+    void load();
+    const interval = setInterval(() => void load(), 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
   // The last journal text that was sent to the pipeline
@@ -427,10 +487,13 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-3 lg:min-w-[620px]">
-            <HeaderMetric icon={RadioTower} label="Monitoring mode" value={monitoringMode} />
-            <HeaderMetric icon={ShieldAlert} label="Risk level" value={riskLevel} tone={riskLevel === "high" ? "risk" : "normal"} />
-            <HeaderMetric icon={Zap} label="Signal rate" value={`${Math.max(8, Math.min(64, typingSpeed + deleteCount))}/min`} />
+          <div className="flex flex-col gap-2 lg:min-w-[620px]">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <HeaderMetric icon={RadioTower} label="Monitoring mode" value={monitoringMode} />
+              <HeaderMetric icon={ShieldAlert} label="Risk level" value={riskLevel} tone={riskLevel === "high" ? "risk" : "normal"} />
+              <HeaderMetric icon={Zap} label="Signal rate" value={`${Math.max(8, Math.min(64, typingSpeed + deleteCount))}/min`} />
+            </div>
+            <IntegrationStrip integrations={integrations} sessionId={sessionId} />
           </div>
         </header>
 
@@ -462,6 +525,9 @@ export default function Home() {
                 <SignalStat icon={AlarmClock} label="Idle time" value={`${idleSeconds}`} suffix="sec" />
                 <SignalStat icon={Clock3} label="Session" value={formatDuration(sessionSeconds)} />
               </div>
+
+              <SensoCard enrichment={senso} enabled={integrations?.senso ?? false} />
+              <AnalyticsSummaryCard summary={analyticsSummary} enabled={integrations?.clickhouse ?? false} />
 
               <div className="rounded-lg border border-white/10 bg-black/25 p-4">
                 <div className="mb-3 flex items-center justify-between">
@@ -908,6 +974,119 @@ function eventDot(tone: TimelineEvent["tone"]) {
   if (tone === "complete") return "bg-teal-300 shadow-[0_0_18px_rgba(45,212,191,0.65)]";
   if (tone === "risk") return "bg-red-300 shadow-[0_0_18px_rgba(248,113,113,0.65)]";
   return "bg-slate-500";
+}
+
+function IntegrationStrip({
+  integrations,
+  sessionId,
+}: {
+  integrations: IntegrationStatus | null;
+  sessionId: string | null;
+}) {
+  const items: Array<{ key: keyof IntegrationStatus; label: string }> = [
+    { key: "clickhouse", label: "ClickHouse" },
+    { key: "datadog", label: "Datadog" },
+    { key: "senso", label: "Senso" },
+  ];
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/10 bg-black/25 px-3 py-2 text-[11px]">
+      <div className="flex items-center gap-2">
+        <span className="font-semibold uppercase tracking-wide text-slate-400">Sponsors</span>
+        {items.map((item) => {
+          const active = integrations?.[item.key] ?? false;
+          return (
+            <span
+              key={item.key}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-md border px-2 py-0.5",
+                active
+                  ? "border-teal-300/50 bg-teal-300/10 text-teal-100"
+                  : "border-white/10 bg-white/[0.03] text-slate-400",
+              )}
+              title={active ? `${item.label} live` : `${item.label} no-op fallback`}
+            >
+              <span className={cn("h-1.5 w-1.5 rounded-full", active ? "bg-teal-300" : "bg-slate-500")} />
+              {item.label}
+            </span>
+          );
+        })}
+      </div>
+      {sessionId ? (
+        <span className="text-slate-500">
+          session <span className="font-mono text-slate-300">{sessionId.slice(0, 8)}</span>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function SensoCard({
+  enrichment,
+  enabled,
+}: {
+  enrichment: SensoEnrichment | null;
+  enabled: boolean;
+}) {
+  if (!enrichment) {
+    return null;
+  }
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/25 p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-2 text-sm text-white">
+          <Waves className="h-4 w-4 text-violet-300" />
+          Senso enrichment
+        </div>
+        <Badge variant={enabled ? "success" : "outline"}>{enabled ? "live" : "heuristic"}</Badge>
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-xs">
+        <EnrichmentStat label="Cadence" value={enrichment.cadence} />
+        <EnrichmentStat label="Fluctuation" value={enrichment.fluctuation_score.toFixed(2)} />
+        <EnrichmentStat label="Sleep" value={enrichment.sleep_consistency} />
+      </div>
+    </div>
+  );
+}
+
+function EnrichmentStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-white/10 bg-white/[0.03] p-2">
+      <p className="text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-1 truncate text-sm font-semibold capitalize text-white">{value}</p>
+    </div>
+  );
+}
+
+function AnalyticsSummaryCard({
+  summary,
+  enabled,
+}: {
+  summary: AnalyticsSummary | null;
+  enabled: boolean;
+}) {
+  if (!summary || summary.total_sessions === 0) {
+    return null;
+  }
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/25 p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-2 text-sm text-white">
+          <Gauge className="h-4 w-4 text-sky-300" />
+          ClickHouse summary
+        </div>
+        <Badge variant={enabled ? "success" : "outline"}>
+          {enabled ? "clickhouse" : "in-memory"}
+        </Badge>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <EnrichmentStat label="Events" value={summary.total_sessions.toString()} />
+        <EnrichmentStat label="Trend" value={summary.trend_direction} />
+        <EnrichmentStat label="Avg stress" value={summary.avg_stress.toString()} />
+        <EnrichmentStat label="Top risk" value={summary.most_common_risk} />
+      </div>
+    </div>
+  );
 }
 
 function formatTime(date: Date) {

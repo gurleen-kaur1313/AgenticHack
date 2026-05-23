@@ -78,6 +78,13 @@ export interface ReflectionPayload {
   recommendations: string[];
 }
 
+export interface SensoEnrichment {
+  cadence: string;
+  fluctuation_score: number;
+  sleep_consistency: string;
+  raw?: Record<string, unknown>;
+}
+
 export interface PipelineResponse {
   session_id: string;
   emotion: EmotionPayload | null;
@@ -86,11 +93,85 @@ export interface PipelineResponse {
   reflection: ReflectionPayload | null;
   monitoring_level: string;
   history: Array<Record<string, unknown>>;
+  senso_enrichment: SensoEnrichment | null;
 }
 
-export async function analyzeSignal(signal: BehavioralSignalPayload): Promise<PipelineResponse> {
-  return request<PipelineResponse>("/analyze", {
+export async function analyzeSignal(
+  signal: BehavioralSignalPayload,
+  sessionId?: string,
+): Promise<PipelineResponse> {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  return request<PipelineResponse>(`/analyze${query}`, {
     method: "POST",
     body: JSON.stringify(signal),
   });
+}
+
+// ---------- Sponsor integration endpoints ----------
+
+export interface IntegrationStatus {
+  clickhouse: boolean;
+  datadog: boolean;
+  senso: boolean;
+}
+
+export interface HealthResponse {
+  status: string;
+  integrations: IntegrationStatus;
+}
+
+export async function fetchHealth(): Promise<HealthResponse> {
+  return request<HealthResponse>("/health");
+}
+
+export interface AnalyticsTimelinePoint {
+  timestamp: string;
+  stress: number;
+  anxiety: number;
+  mood: number;
+}
+
+export async function fetchAnalyticsTimeline(
+  sessionId: string,
+  period: "1h" | "6h" | "24h" | "7d" = "24h",
+): Promise<AnalyticsTimelinePoint[]> {
+  return request<AnalyticsTimelinePoint[]>(`/analytics/timeline/${sessionId}?period=${period}`);
+}
+
+export interface AnalyticsSummary {
+  total_sessions: number;
+  avg_stress: number;
+  avg_anxiety: number;
+  avg_mood: number;
+  most_common_risk: string;
+  most_deployed_intervention: string;
+  trend_direction: string;
+}
+
+export async function fetchAnalyticsSummary(sessionId: string): Promise<AnalyticsSummary> {
+  return request<AnalyticsSummary>(`/analytics/summary/${sessionId}`);
+}
+
+export interface AnalyticsInterventionRow {
+  timestamp: string;
+  intervention_type: string;
+  risk_level: string;
+  stress_score: number;
+}
+
+export async function fetchAnalyticsInterventions(
+  sessionId: string,
+): Promise<AnalyticsInterventionRow[]> {
+  return request<AnalyticsInterventionRow[]>(`/analytics/interventions/${sessionId}`);
+}
+
+export interface AnalyticsCorrelationPoint {
+  sleep_hours: number;
+  avg_stress: number;
+}
+
+export async function fetchAnalyticsCorrelation(
+  sessionId: string,
+): Promise<AnalyticsCorrelationPoint[]> {
+  return request<AnalyticsCorrelationPoint[]>(`/analytics/correlation/${sessionId}`);
 }

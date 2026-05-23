@@ -6,9 +6,13 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from models import BehavioralSignal, OrchestrationState, WellnessCheckin
+from models import BehavioralSignal, WellnessCheckin
 from orchestrator.graph import history_manager, pipeline
 from orchestrator.state import to_orchestration_state
+from utils import datadog as dd
+from utils import senso as senso_module
+from utils.db_client import db_client
+from utils.senso import senso_client
 
 app = FastAPI(title="MindMesh")
 
@@ -62,6 +66,7 @@ def _serialize_pipeline_result(result: dict) -> dict:
         "reflection": orch.reflection.model_dump() if orch.reflection else None,
         "monitoring_level": orch.monitoring_level,
         "history": orch.history,
+        "senso_enrichment": result.get("senso_enrichment"),
     }
 
 
@@ -98,7 +103,42 @@ async def _handle_websocket(websocket: WebSocket, session_id: str) -> None:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "integrations": {
+            "clickhouse": db_client.enabled,
+            "datadog": dd.is_enabled(),
+            "senso": senso_module.is_enabled(),
+        },
+    }
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    await senso_client.aclose()
+
+
+# ---------- Analytics endpoints (Person C / ClickHouse) ----------
+
+
+@app.get("/analytics/timeline/{session_id}")
+async def analytics_timeline(session_id: str, period: str = "24h"):
+    return db_client.get_timeline(session_id, period=period)
+
+
+@app.get("/analytics/correlation/{session_id}")
+async def analytics_correlation(session_id: str):
+    return db_client.get_correlation(session_id)
+
+
+@app.get("/analytics/interventions/{session_id}")
+async def analytics_interventions(session_id: str):
+    return db_client.get_intervention_history(session_id)
+
+
+@app.get("/analytics/summary/{session_id}")
+async def analytics_summary(session_id: str):
+    return db_client.get_summary(session_id)
 
 
 @app.websocket("/ws/{session_id}")
@@ -113,10 +153,10 @@ async def websocket_sessions_endpoint(websocket: WebSocket, session_id: str):
 
 
 @app.post("/analyze")
-async def analyze(signal: BehavioralSignal):
-    session_id = str(uuid.uuid4())
-    state = _build_initial_state(session_id, signal)
-    return await _run_pipeline(session_id, state)
+async def analyze(signal: BehavioralSignal, session_id: str | None = None):
+    session = session_id or str(uuid.uuid4())
+    state = _build_initial_state(session, signal)
+    return await _run_pipeline(session, state)
 
 
 @app.get("/signals")
