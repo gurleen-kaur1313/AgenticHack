@@ -217,7 +217,7 @@ export default function Home() {
   }, []);
 
   const runWorkflow = useCallback(
-    async (trigger: "manual" | "auto" = "manual") => {
+    async () => { // not auto now
       if (!hasEnoughContent || workflowActive) {
         return;
       }
@@ -257,9 +257,7 @@ export default function Home() {
 
       addTimeline(
         "Orchestrator",
-        trigger === "auto"
-          ? "Auto-analysis triggered from journal signal."
-          : "Manual journal analysis requested.",
+        "Manual journal analysis requested.",
         "risk",
       );
 
