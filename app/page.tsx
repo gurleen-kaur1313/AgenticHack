@@ -19,7 +19,6 @@ import {
   RotateCcw,
   ShieldAlert,
   Sparkles,
-  TimerReset,
   Waves,
   Zap,
 } from "lucide-react";
@@ -49,7 +48,7 @@ import {
   type PipelineResponse,
   type SensoEnrichment,
 } from "@/lib/api";
-import { agents as mockAgents, interventionHistory, moodTrends } from "@/lib/mock-data";
+import { interventionHistory, moodTrends } from "@/lib/mock-data";
 import type { AgentStatus, MoodPoint, RiskLevel } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -91,6 +90,9 @@ type AgentOutput = {
 
 const MIN_WORDS_TO_ANALYZE = 5;
 const TYPING_DEBOUNCE_MS = 2500;
+const initialTimelineTimestamp = "--:--:--";
+const highStressDemoText =
+  "I feel overwhelmed, anxious, burned out, and can't sleep before this deadline.";
 
 const initialAgents: DemoAgent[] = [
   {
@@ -139,16 +141,16 @@ export default function Home() {
   const [journalText, setJournalText] = useState("");
   const [deleteCount, setDeleteCount] = useState(0);
   const [sleepHours, setSleepHours] = useState(5.5);
-  const [lastInputAt, setLastInputAt] = useState(() => Date.now());
-  const [sessionStartedAt] = useState(() => Date.now());
-  const [now, setNow] = useState(() => Date.now());
+  const [lastInputAt, setLastInputAt] = useState(0);
+  const [sessionStartedAt, setSessionStartedAt] = useState(0);
+  const [now, setNow] = useState(0);
   const [agents, setAgents] = useState<DemoAgent[]>(initialAgents);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([
     {
       id: "boot",
       agent: "System",
       message: "Monitoring mode active. Client-side signal stream initialized.",
-      timestamp: formatTime(new Date()),
+      timestamp: initialTimelineTimestamp,
       tone: "neutral",
     },
   ]);
@@ -166,10 +168,12 @@ export default function Home() {
   const [integrations, setIntegrations] = useState<IntegrationStatus | null>(null);
   const [senso, setSenso] = useState<SensoEnrichment | null>(null);
   const [analyticsSummary, setAnalyticsSummary] = useState<AnalyticsSummary | null>(null);
+  const [backendStatus, setBackendStatus] = useState<"idle" | "connected" | "fallback">("idle");
   const timersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
 
   const wordCount = useMemo(() => journalText.trim().split(/\s+/).filter(Boolean).length, [journalText]);
-  const sessionSeconds = Math.max(1, Math.floor((now - sessionStartedAt) / 1000));
+  const sessionSeconds =
+    now > 0 && sessionStartedAt > 0 ? Math.max(1, Math.floor((now - sessionStartedAt) / 1000)) : 0;
   const activeMinutes = Math.max(1 / 60, sessionSeconds / 60);
   const typingSpeed = Math.round(journalText.length / 5 / activeMinutes);
   const idleSeconds = Math.max(0, Math.floor((now - lastInputAt) / 1000));
@@ -200,11 +204,12 @@ export default function Home() {
   }, []);
 
   const runWorkflow = useCallback(
-    async (source: "auto" | "simulate") => {
+    async (source: "auto" | "simulate", journalTextOverride?: string) => {
       resetTimers();
       setWorkflowActive(true);
       setAgents(initialAgents);
-      const isSevere = source === "simulate" || journalText.toLowerCase().includes("panic");
+      const liveJournalText = journalTextOverride ?? journalText;
+      const isSevere = source === "simulate" || liveJournalText.toLowerCase().includes("panic");
       const fallback: AgentOutput = {
         stress: isSevere ? 91 : 78,
         anxiety: isSevere ? 88 : 72,
@@ -237,8 +242,8 @@ export default function Home() {
       );
 
       const effectiveJournalText =
-        journalText.trim().length > 0
-          ? journalText
+        liveJournalText.trim().length > 0
+          ? liveJournalText
           : "I haven't slept in 3 days and I can't handle this anymore";
 
       let pipeline: PipelineResponse | null = null;
@@ -255,6 +260,7 @@ export default function Home() {
           },
           sessionId ?? undefined,
         );
+        setBackendStatus("connected");
         addTimeline("Backend", "Pipeline response received from /analyze.", "complete");
         if (pipeline.session_id && pipeline.session_id !== sessionId) {
           setSessionId(pipeline.session_id);
@@ -280,6 +286,7 @@ export default function Home() {
         }
       } catch (error) {
         console.warn("MindMesh backend unreachable, using mock output", error);
+        setBackendStatus("fallback");
         addTimeline("Backend", "Backend unreachable — using local mock pipeline.", "neutral");
       }
 
@@ -401,6 +408,15 @@ export default function Home() {
   );
 
   useEffect(() => {
+    const startedAt = Date.now();
+    setSessionStartedAt(startedAt);
+    setLastInputAt(startedAt);
+    setNow(startedAt);
+    setTimeline((current) =>
+      current.map((event) =>
+        event.id === "boot" ? { ...event, timestamp: formatTime(new Date(startedAt)) } : event,
+      ),
+    );
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, []);
@@ -459,6 +475,11 @@ export default function Home() {
     setLastInputAt(Date.now());
   };
 
+  const simulateHighStressEvent = () => {
+    onJournalChange(highStressDemoText);
+    void runWorkflow("simulate", highStressDemoText);
+  };
+
   return (
     <main className="min-h-screen overflow-hidden bg-background text-foreground">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_18%_12%,rgba(124,58,237,0.24),transparent_28%),radial-gradient(circle_at_82%_8%,rgba(14,165,233,0.18),transparent_26%),radial-gradient(circle_at_55%_86%,rgba(45,212,191,0.14),transparent_30%)]" />
@@ -479,6 +500,13 @@ export default function Home() {
                 <h1 className="text-2xl font-semibold tracking-normal text-white">MindMesh</h1>
                 <Badge variant={workflowActive ? "warning" : "success"}>
                   {workflowActive ? "Agents running" : "System online"}
+                </Badge>
+                <Badge variant={backendStatus === "fallback" ? "warning" : backendStatus === "connected" ? "success" : "outline"}>
+                  {backendStatus === "connected"
+                    ? "Backend connected"
+                    : backendStatus === "fallback"
+                      ? "Local fallback"
+                      : "Backend ready"}
                 </Badge>
               </div>
               <p className="text-sm text-slate-300">
@@ -502,7 +530,7 @@ export default function Home() {
             <CardHeader className="flex-row items-center justify-between space-y-0">
               <div>
                 <CardTitle>Live Journal Input</CardTitle>
-                <p className="mt-1 text-xs text-slate-400">Browser-only signal capture</p>
+                <p className="mt-1 text-xs text-slate-400">Streams journal signals to backend pipeline</p>
               </div>
               <Keyboard className="h-4 w-4 text-teal-300" />
             </CardHeader>
@@ -550,7 +578,7 @@ export default function Home() {
               </div>
 
               <Button
-                onClick={() => void runWorkflow("simulate")}
+                onClick={simulateHighStressEvent}
                 className="w-full bg-gradient-to-r from-violet-400 via-sky-400 to-teal-300 text-slate-950 hover:opacity-90"
               >
                 <Flame className="h-4 w-4" />
@@ -1090,7 +1118,10 @@ function AnalyticsSummaryCard({
 }
 
 function formatTime(date: Date) {
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const hours = date.getHours().toString().padStart(2, "0");
+  const minutes = date.getMinutes().toString().padStart(2, "0");
+  const seconds = date.getSeconds().toString().padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
 }
 
 function formatDuration(seconds: number) {
