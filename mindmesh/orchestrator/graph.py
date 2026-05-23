@@ -30,7 +30,11 @@ async def _run_traced(agent_name: str, agent, state_dict: dict) -> dict:
         orch = await agent.run(orch)
     elapsed_ms = (time.perf_counter() - start) * 1000
     dd.record_agent_latency(agent_name, elapsed_ms)
-    return from_orchestration_state(orch)
+    result = from_orchestration_state(orch)
+    # Preserve transient side-channel keys (e.g. senso enrichment from ingest_node)
+    if "senso_enrichment" in state_dict and "senso_enrichment" not in result:
+        result["senso_enrichment"] = state_dict["senso_enrichment"]
+    return result
 
 
 async def ingest_node(state: dict) -> dict:
