@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from dotenv import load_dotenv
@@ -197,7 +197,7 @@ class WellnessDBClient:
 
         return [
             event
-            for event in sorted(self._memory.events, key=lambda e: e.timestamp, reverse=True)
+            for event in sorted(self._memory.events, key=lambda e: _normalize_datetime(e.timestamp), reverse=True)
             if event.session_id == session_id
         ][:limit]
 
@@ -206,7 +206,7 @@ class WellnessDBClient:
         events = [
             event
             for event in self._memory.events
-            if event.session_id == session_id and event.timestamp >= since
+            if event.session_id == session_id and _normalize_datetime(event.timestamp) >= since
         ]
 
         if self._enabled and self._client:
@@ -234,7 +234,7 @@ class WellnessDBClient:
             except Exception as exc:
                 print(f"[clickhouse] get_timeline failed: {exc}")
 
-        events.sort(key=lambda e: e.timestamp)
+        events.sort(key=lambda e: _normalize_datetime(e.timestamp))
         return [
             {
                 "timestamp": event.timestamp.isoformat(),
@@ -252,7 +252,7 @@ class WellnessDBClient:
             try:
                 result = self._client.query(
                     """
-                    SELECT sleep_hours, avg(stress_score) AS avg_stress
+                    SELECT sleep_hours, avg(stress_score) AS avg_stress, avg(anxiety_score) AS avg_anxiety
                     FROM wellness_events
                     WHERE session_id = {session_id:String}
                     GROUP BY sleep_hours
@@ -261,21 +261,28 @@ class WellnessDBClient:
                     parameters={"session_id": session_id},
                 )
                 return [
-                    {"sleep_hours": int(sleep), "avg_stress": float(stress)}
-                    for (sleep, stress) in result.result_rows
+                    {
+                        "sleep_hours": int(sleep),
+                        "avg_stress": float(stress),
+                        "avg_anxiety": float(anxiety),
+                    }
+                    for (sleep, stress, anxiety) in result.result_rows
                 ]
             except Exception as exc:
                 print(f"[clickhouse] get_correlation failed: {exc}")
 
-        buckets: dict[int, list[int]] = {}
+        buckets: dict[int, dict[str, list[int]]] = {}
         for event in events:
-            buckets.setdefault(event.sleep_hours, []).append(event.stress_score)
+            bucket = buckets.setdefault(event.sleep_hours, {"stress": [], "anxiety": []})
+            bucket["stress"].append(event.stress_score)
+            bucket["anxiety"].append(event.anxiety_score)
         return [
             {
                 "sleep_hours": sleep,
-                "avg_stress": sum(scores) / len(scores) if scores else 0,
+                "avg_stress": sum(values["stress"]) / len(values["stress"]) if values["stress"] else 0,
+                "avg_anxiety": sum(values["anxiety"]) / len(values["anxiety"]) if values["anxiety"] else 0,
             }
-            for sleep, scores in sorted(buckets.items())
+            for sleep, values in sorted(buckets.items())
         ]
 
     def get_intervention_history(self, session_id: str) -> list[dict[str, Any]]:
@@ -309,7 +316,7 @@ class WellnessDBClient:
             except Exception as exc:
                 print(f"[clickhouse] get_intervention_history failed: {exc}")
 
-        events.sort(key=lambda e: e.timestamp, reverse=True)
+        events.sort(key=lambda e: _normalize_datetime(e.timestamp), reverse=True)
         return [
             {
                 "timestamp": event.timestamp.isoformat(),
@@ -339,7 +346,7 @@ class WellnessDBClient:
         risk_counter = Counter(e.risk_level for e in events)
         intervention_counter = Counter(e.intervention_type for e in events if e.intervention_type)
 
-        sorted_events = sorted(events, key=lambda e: e.timestamp)
+        sorted_events = sorted(events, key=lambda e: _normalize_datetime(e.timestamp))
         first_half = sorted_events[: len(sorted_events) // 2 or 1]
         second_half = sorted_events[len(sorted_events) // 2 :]
         first_avg = sum(e.stress_score for e in first_half) / len(first_half)
@@ -366,7 +373,7 @@ class WellnessDBClient:
 
 
 def _period_to_datetime(period: str) -> datetime:
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     mapping = {
         "1h": timedelta(hours=1),
         "6h": timedelta(hours=6),
@@ -375,6 +382,12 @@ def _period_to_datetime(period: str) -> datetime:
         "30d": timedelta(days=30),
     }
     return now - mapping.get(period, timedelta(hours=24))
+
+
+def _normalize_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _period_to_interval(period: str) -> str:

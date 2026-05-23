@@ -168,6 +168,7 @@ export async function fetchAnalyticsInterventions(
 export interface AnalyticsCorrelationPoint {
   sleep_hours: number;
   avg_stress: number;
+  avg_anxiety?: number;
 }
 
 export async function fetchAnalyticsCorrelation(

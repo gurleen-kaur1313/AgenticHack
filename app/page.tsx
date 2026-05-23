@@ -41,9 +41,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import {
   analyzeSignal,
+  fetchAnalyticsCorrelation,
+  fetchAnalyticsInterventions,
   fetchAnalyticsSummary,
+  fetchAnalyticsTimeline,
   fetchHealth,
+  type AnalyticsCorrelationPoint,
+  type AnalyticsInterventionRow,
   type AnalyticsSummary,
+  type AnalyticsTimelinePoint,
   type IntegrationStatus,
   type PipelineResponse,
   type SensoEnrichment,
@@ -86,6 +92,13 @@ type AgentOutput = {
   risk: RiskLevel;
   intervention: InterventionCard | null;
   insight: string;
+};
+
+type HistoryQuestionId = "stress_trend" | "sleep_anxiety" | "intervention_frequency" | "baseline_compare";
+
+type HistoryAnswer = {
+  question: string;
+  answer: string;
 };
 
 const MIN_WORDS_TO_ANALYZE = 5;
@@ -165,6 +178,8 @@ export default function Home() {
   const [integrations, setIntegrations] = useState<IntegrationStatus | null>(null);
   const [senso, setSenso] = useState<SensoEnrichment | null>(null);
   const [analyticsSummary, setAnalyticsSummary] = useState<AnalyticsSummary | null>(null);
+  const [historyAnswer, setHistoryAnswer] = useState<HistoryAnswer | null>(null);
+  const [historyQuestionLoading, setHistoryQuestionLoading] = useState<HistoryQuestionId | null>(null);
   const [backendStatus, setBackendStatus] = useState<"idle" | "connected" | "fallback">("idle");
   const timersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
 
@@ -249,7 +264,7 @@ export default function Home() {
       try {
         pipeline = await analyzeSignal(
           {
-            journal_text: effectiveJournalText,
+            journal_text: liveJournalText,
             typing_speed: Math.max(20, typingSpeed),
             pause_frequency: Math.min(20, Math.floor(idleSeconds / 2)),
             deletion_frequency: deleteCount,
@@ -406,6 +421,53 @@ export default function Home() {
     [addTimeline, deleteCount, idleSeconds, journalText, resetTimers, sessionId, typingSpeed, updateAgent]
   );
 
+  const answerHistoryQuestion = useCallback(
+    async (questionId: HistoryQuestionId) => {
+      const question = historyQuestions.find((item) => item.id === questionId)?.label ?? "History question";
+
+      if (!sessionId) {
+        setHistoryAnswer({
+          question,
+          answer: "Analyze at least one journal entry first so MindMesh has a session id to query.",
+        });
+        return;
+      }
+
+      setHistoryQuestionLoading(questionId);
+      try {
+        const [timeline, correlation, interventions, summary] = await Promise.all([
+          fetchAnalyticsTimeline(sessionId, "7d"),
+          fetchAnalyticsCorrelation(sessionId),
+          fetchAnalyticsInterventions(sessionId),
+          fetchAnalyticsSummary(sessionId),
+        ]);
+
+        setAnalyticsSummary(summary);
+        setHistoryAnswer({
+          question,
+          answer: buildHistoryAnswer(questionId, {
+            timeline,
+            correlation,
+            interventions,
+            summary,
+            current: output,
+          }),
+        });
+        addTimeline("ClickHouse", `Answered history question: ${question}`, "complete");
+      } catch (error) {
+        console.warn("history question failed", error);
+        setHistoryAnswer({
+          question,
+          answer: "Could not query the history store. Start the backend and make sure ClickHouse or the in-memory fallback has events for this session.",
+        });
+        addTimeline("ClickHouse", "History question failed; analytics endpoint unavailable.", "neutral");
+      } finally {
+        setHistoryQuestionLoading(null);
+      }
+    },
+    [addTimeline, output, sessionId],
+  );
+
   useEffect(() => {
     const startedAt = Date.now();
     setSessionStartedAt(startedAt);
@@ -442,30 +504,6 @@ export default function Home() {
       clearInterval(interval);
     };
   }, []);
-
-  // The last journal text that was sent to the pipeline
-  const lastAnalyzedTextRef = useRef("");
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    if (!hasEnoughContent) return;
-
-    // Clear any pending debounce when the user keeps typing
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-
-    debounceTimerRef.current = setTimeout(() => {
-      // Don't re-run if the text hasn't meaningfully changed since last analysis
-      if (journalText.trim() === lastAnalyzedTextRef.current) return;
-      if (workflowActive) return;
-
-      lastAnalyzedTextRef.current = journalText.trim();
-      void runWorkflow("auto");
-    }, TYPING_DEBOUNCE_MS);
-
-    return () => {
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    };
-  }, [journalText, hasEnoughContent, workflowActive, runWorkflow]);
 
   useEffect(() => resetTimers, [resetTimers]);
 
@@ -784,6 +822,14 @@ export default function Home() {
                 </p>
               </CardContent>
             </Card>
+
+            <HistoryQuestionsCard
+              answer={historyAnswer}
+              clickhouseEnabled={integrations?.clickhouse ?? false}
+              loading={historyQuestionLoading}
+              onAsk={(questionId) => void answerHistoryQuestion(questionId)}
+              sessionId={sessionId}
+            />
           </aside>
         </section>
 
@@ -1112,6 +1158,67 @@ function AnalyticsSummaryCard({
   );
 }
 
+const historyQuestions: Array<{ id: HistoryQuestionId; label: string }> = [
+  { id: "stress_trend", label: "Has this user's stress increased over time?" },
+  { id: "sleep_anxiety", label: "Does low sleep correlate with higher anxiety?" },
+  { id: "intervention_frequency", label: "Which interventions were deployed most often?" },
+  { id: "baseline_compare", label: "Is this session worse than the recent baseline?" },
+];
+
+function HistoryQuestionsCard({
+  answer,
+  clickhouseEnabled,
+  loading,
+  onAsk,
+  sessionId,
+}: {
+  answer: HistoryAnswer | null;
+  clickhouseEnabled: boolean;
+  loading: HistoryQuestionId | null;
+  onAsk: (questionId: HistoryQuestionId) => void;
+  sessionId: string | null;
+}) {
+  return (
+    <Card className="border-white/10 bg-white/[0.055] shadow-2xl shadow-black/30 backdrop-blur-xl">
+      <CardHeader className="flex-row items-center justify-between space-y-0">
+        <div>
+          <CardTitle>Ask History</CardTitle>
+          <p className="mt-1 text-xs text-slate-400">Answers from stored session events</p>
+        </div>
+        <Badge variant={clickhouseEnabled ? "success" : "outline"}>
+          {clickhouseEnabled ? "ClickHouse" : "memory"}
+        </Badge>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid gap-2">
+          {historyQuestions.map((question) => (
+            <button
+              key={question.id}
+              type="button"
+              onClick={() => onAsk(question.id)}
+              disabled={loading !== null}
+              className="rounded-md border border-white/10 bg-black/25 px-3 py-2 text-left text-xs leading-5 text-slate-200 transition hover:border-sky-300/40 hover:bg-sky-300/10 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {loading === question.id ? "Querying history..." : question.label}
+            </button>
+          ))}
+        </div>
+        {!sessionId ? (
+          <p className="rounded-md border border-amber-300/20 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">
+            Analyze a journal entry first to create a session history.
+          </p>
+        ) : null}
+        {answer ? (
+          <div className="rounded-lg border border-teal-300/25 bg-teal-300/10 p-4">
+            <p className="text-xs font-semibold text-teal-100">{answer.question}</p>
+            <p className="mt-2 text-sm leading-6 text-slate-100">{answer.answer}</p>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 function formatTime(date: Date) {
   const hours = date.getHours().toString().padStart(2, "0");
   const minutes = date.getMinutes().toString().padStart(2, "0");
@@ -1179,4 +1286,115 @@ function humanizeKey(key: string): string {
 function parseMinutes(duration: string): number | null {
   const match = duration.match(/(\d+(?:\.\d+)?)/);
   return match ? Math.max(1, Math.round(Number(match[1]))) : null;
+}
+
+function buildHistoryAnswer(
+  questionId: HistoryQuestionId,
+  data: {
+    timeline: AnalyticsTimelinePoint[];
+    correlation: AnalyticsCorrelationPoint[];
+    interventions: AnalyticsInterventionRow[];
+    summary: AnalyticsSummary;
+    current: AgentOutput;
+  },
+): string {
+  switch (questionId) {
+    case "stress_trend":
+      return answerStressTrend(data.timeline, data.summary);
+    case "sleep_anxiety":
+      return answerSleepAnxiety(data.correlation);
+    case "intervention_frequency":
+      return answerInterventionFrequency(data.interventions, data.summary);
+    case "baseline_compare":
+      return answerBaselineCompare(data.timeline, data.current);
+  }
+}
+
+function answerStressTrend(timeline: AnalyticsTimelinePoint[], summary: AnalyticsSummary): string {
+  if (timeline.length < 2) {
+    return `Not enough stored events yet. Current summary has ${summary.total_sessions} event${summary.total_sessions === 1 ? "" : "s"}; analyze a few more entries to establish a trend.`;
+  }
+
+  const first = timeline[0].stress;
+  const last = timeline[timeline.length - 1].stress;
+  const change = percentChange(first, last);
+  const direction = last > first ? "increased" : last < first ? "decreased" : "stayed stable";
+
+  return `Stress has ${direction}: it moved from ${first}/100 to ${last}/100 across ${timeline.length} stored events (${formatSignedPercent(change)}). Overall trend is ${summary.trend_direction}.`;
+}
+
+function answerSleepAnxiety(correlation: AnalyticsCorrelationPoint[]): string {
+  const usable = correlation
+    .filter((point) => typeof point.avg_anxiety === "number")
+    .sort((a, b) => a.sleep_hours - b.sleep_hours);
+
+  if (usable.length < 2) {
+    return "Not enough sleep/anxiety history yet. Add multiple journal analyses with different sleep-hour inputs to compare low sleep against higher sleep.";
+  }
+
+  const lowSleep = usable[0];
+  const highSleep = usable[usable.length - 1];
+  const lowAnxiety = lowSleep.avg_anxiety ?? 0;
+  const highAnxiety = highSleep.avg_anxiety ?? 0;
+
+  if (lowAnxiety > highAnxiety) {
+    return `Yes. Stored events show higher anxiety at lower sleep: ${lowSleep.sleep_hours}h sleep averages ${lowAnxiety.toFixed(1)}/100 anxiety, while ${highSleep.sleep_hours}h averages ${highAnxiety.toFixed(1)}/100.`;
+  }
+
+  if (lowAnxiety < highAnxiety) {
+    return `Not in the current stored data. ${lowSleep.sleep_hours}h sleep averages ${lowAnxiety.toFixed(1)}/100 anxiety, while ${highSleep.sleep_hours}h averages ${highAnxiety.toFixed(1)}/100. More events may change this.`;
+  }
+
+  return `The current data is flat: both low and high sleep buckets average ${lowAnxiety.toFixed(1)}/100 anxiety.`;
+}
+
+function answerInterventionFrequency(
+  interventions: AnalyticsInterventionRow[],
+  summary: AnalyticsSummary,
+): string {
+  if (!interventions.length) {
+    return "No intervention events have been stored for this session yet.";
+  }
+
+  const counts = interventions.reduce<Record<string, number>>((acc, row) => {
+    acc[row.intervention_type] = (acc[row.intervention_type] ?? 0) + 1;
+    return acc;
+  }, {});
+  const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const [topIntervention, topCount] = ranked[0];
+
+  return `${humanizeKey(topIntervention)} was deployed most often (${topCount} time${topCount === 1 ? "" : "s"}). Summary top intervention: ${summary.most_deployed_intervention ? humanizeKey(summary.most_deployed_intervention) : "none"}.`;
+}
+
+function answerBaselineCompare(timeline: AnalyticsTimelinePoint[], current: AgentOutput): string {
+  if (timeline.length < 2) {
+    return "This is still the baseline period. Analyze more entries before comparing the current session against recent history.";
+  }
+
+  const previous = timeline.slice(0, -1);
+  const avgStress = average(previous.map((point) => point.stress));
+  const avgAnxiety = average(previous.map((point) => point.anxiety));
+  const avgMood = average(previous.map((point) => point.mood));
+  const worse =
+    current.stress > avgStress + 5 ||
+    current.anxiety > avgAnxiety + 5 ||
+    current.mood < avgMood - 5;
+
+  return `${worse ? "Yes" : "No"}. Current stress/anxiety/mood are ${current.stress}/${current.anxiety}/${current.mood}, compared with recent baselines of ${avgStress.toFixed(1)}/${avgAnxiety.toFixed(1)}/${avgMood.toFixed(1)}.`;
+}
+
+function average(values: number[]): number {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+function percentChange(first: number, last: number): number {
+  if (first === 0) {
+    return last > 0 ? 100 : 0;
+  }
+
+  return ((last - first) / first) * 100;
+}
+
+function formatSignedPercent(value: number): string {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
 }
