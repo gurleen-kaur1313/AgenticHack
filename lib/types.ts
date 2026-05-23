@@ -1,4 +1,11 @@
-export type AgentStatus = "idle" | "monitoring" | "analyzing" | "intervening" | "escalated";
+export type AgentStatus =
+  | "idle"
+  | "monitoring"
+  | "analyzing"
+  | "intervening"
+  | "escalated"
+  | "running"
+  | "complete";
 
 export type RiskLevel = "low" | "moderate" | "high" | "critical";
 

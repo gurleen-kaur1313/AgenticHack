@@ -14,6 +14,8 @@ const statusTone = {
   analyzing: "bg-amber-300",
   intervening: "bg-teal-300",
   escalated: "bg-red-300",
+  running: "bg-sky-300",
+  complete: "bg-teal-300",
 };
 
 interface AgentWorkflowProps {
