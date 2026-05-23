@@ -44,12 +44,8 @@ class InterventionAgent(BaseAgent):
 
         user_prompt = self._build_user_prompt(state)
 
-        try:
-            raw = await llm_call(self.system_prompt, user_prompt)
-            parsed = parse_json_response(raw)
-        except Exception as exc:
-            self.log(f"LLM unavailable, using deterministic planner fallback: {exc}")
-            parsed = self._fallback_plan(state)
+        raw = await llm_call(self.system_prompt, user_prompt)
+        parsed = parse_json_response(raw)
 
         state.intervention = self._normalize_result(parsed, state)
         self.log(

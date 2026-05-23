@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -6,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "mindmesh"))
 
 from agents.reflection import ReflectionAgent
+import agents.reflection as reflection_module
 from models import (
     BehavioralSignal,
     EmotionResult,
@@ -13,6 +15,36 @@ from models import (
     OrchestrationState,
     RiskResult,
 )
+
+
+async def fake_llm_call(system_prompt: str, user_prompt: str) -> str:
+    if "first session" in user_prompt.lower():
+        return json.dumps(
+            {
+                "insight": "This baseline reading shows stress at 65/100 and anxiety at 58/100; compare the next session after logging sleep.",
+                "trend_change": "baseline established",
+                "period": "0d",
+                "recommendations": [
+                    "Complete one more check-in after the next work block",
+                    "Log sleep hours before the next reflection",
+                ],
+            }
+        )
+
+    return json.dumps(
+        {
+            "insight": "Stress has moved down from recent high readings while mood is improving; repeat the reset routine before late-night work.",
+            "trend_change": "-18% stress improvement over 7 days",
+            "period": "7d",
+            "recommendations": [
+                "Run the selected intervention before the next focused work block",
+                "Track whether 7+ hours of sleep keeps stress below 75/100",
+            ],
+        }
+    )
+
+
+reflection_module.llm_call = fake_llm_call
 
 
 def build_signal(text: str) -> BehavioralSignal:

@@ -26,12 +26,8 @@ class ReflectionAgent(BaseAgent):
         self.log("Generating behavioral reflection insight")
         user_prompt = self._build_user_prompt(state)
 
-        try:
-            raw = await llm_call(self.system_prompt, user_prompt)
-            parsed = parse_json_response(raw)
-        except Exception as exc:
-            self.log(f"LLM unavailable, using deterministic reflection fallback: {exc}")
-            parsed = self._fallback_reflection(state)
+        raw = await llm_call(self.system_prompt, user_prompt)
+        parsed = parse_json_response(raw)
 
         state.reflection = ReflectionResult(**parsed)
         self.log("Result: reflection insight generated")

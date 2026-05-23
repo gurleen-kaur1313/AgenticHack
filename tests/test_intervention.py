@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -6,7 +7,34 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "mindmesh"))
 
 from agents.intervention import InterventionAgent
+import agents.intervention as intervention_module
 from models import BehavioralSignal, EmotionResult, OrchestrationState, RiskResult
+
+
+async def fake_llm_call(system_prompt: str, user_prompt: str) -> str:
+    if "Risk level: high" in user_prompt:
+        return json.dumps(
+            {
+                "intervention": "grounding_exercise",
+                "workflow": ["grounding_exercise", "sleep_recovery"],
+                "duration": "19 minutes",
+                "follow_up": "scheduled",
+                "priority": "immediate",
+            }
+        )
+
+    return json.dumps(
+        {
+            "intervention": "journaling_prompt",
+            "workflow": ["journaling_prompt"],
+            "duration": "8 minutes",
+            "follow_up": "scheduled",
+            "priority": "suggested",
+        }
+    )
+
+
+intervention_module.llm_call = fake_llm_call
 
 
 def build_state(risk_level: str, flags: list[str]) -> OrchestrationState:

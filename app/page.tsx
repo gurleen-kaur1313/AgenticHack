@@ -89,10 +89,7 @@ type AgentOutput = {
 };
 
 const MIN_WORDS_TO_ANALYZE = 5;
-const TYPING_DEBOUNCE_MS = 2500;
 const initialTimelineTimestamp = "--:--:--";
-const highStressDemoText =
-  "I feel overwhelmed, anxious, burned out, and can't sleep before this deadline.";
 
 const initialAgents: DemoAgent[] = [
   {
@@ -204,12 +201,19 @@ export default function Home() {
   }, []);
 
   const runWorkflow = useCallback(
-    async (source: "auto" | "simulate", journalTextOverride?: string) => {
+    async () => {
+      if (!hasEnoughContent || workflowActive) {
+        return;
+      }
+
       resetTimers();
       setWorkflowActive(true);
       setAgents(initialAgents);
-      const liveJournalText = journalTextOverride ?? journalText;
-      const isSevere = source === "simulate" || liveJournalText.toLowerCase().includes("panic");
+      const liveJournalText = journalText.trim();
+      const isSevere =
+        liveJournalText.toLowerCase().includes("panic") ||
+        liveJournalText.toLowerCase().includes("overwhelmed") ||
+        liveJournalText.toLowerCase().includes("can't sleep");
       const fallback: AgentOutput = {
         stress: isSevere ? 91 : 78,
         anxiety: isSevere ? 88 : 72,
@@ -237,14 +241,9 @@ export default function Home() {
 
       addTimeline(
         "Orchestrator",
-        source === "simulate" ? "Injected high-stress demo signal." : "Stress phrase detected in journal stream.",
+        "Manual journal analysis requested.",
         "risk",
       );
-
-      const effectiveJournalText =
-        liveJournalText.trim().length > 0
-          ? liveJournalText
-          : "I haven't slept in 3 days and I can't handle this anymore";
 
       let pipeline: PipelineResponse | null = null;
       try {
@@ -475,11 +474,6 @@ export default function Home() {
     setLastInputAt(Date.now());
   };
 
-  const simulateHighStressEvent = () => {
-    onJournalChange(highStressDemoText);
-    void runWorkflow("simulate", highStressDemoText);
-  };
-
   return (
     <main className="min-h-screen overflow-hidden bg-background text-foreground">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_18%_12%,rgba(124,58,237,0.24),transparent_28%),radial-gradient(circle_at_82%_8%,rgba(14,165,233,0.18),transparent_26%),radial-gradient(circle_at_55%_86%,rgba(45,212,191,0.14),transparent_30%)]" />
@@ -578,11 +572,12 @@ export default function Home() {
               </div>
 
               <Button
-                onClick={simulateHighStressEvent}
+                onClick={() => void runWorkflow()}
+                disabled={!hasEnoughContent || workflowActive}
                 className="w-full bg-gradient-to-r from-violet-400 via-sky-400 to-teal-300 text-slate-950 hover:opacity-90"
               >
-                <Flame className="h-4 w-4" />
-                Simulate high stress event
+                <Activity className="h-4 w-4" />
+                {workflowActive ? "Analyzing journal..." : "Analyze journal"}
               </Button>
             </CardContent>
           </Card>
