@@ -18,11 +18,13 @@ load_dotenv()
 
 _tracer = None
 _statsd = None
+_llmobs = None
 _enabled = False
+_llmobs_enabled = False
 
 
 def _init() -> None:
-    global _tracer, _statsd, _enabled
+    global _tracer, _statsd, _llmobs, _enabled, _llmobs_enabled
     if not os.getenv("DD_API_KEY"):
         return
 
@@ -46,12 +48,38 @@ def _init() -> None:
         _statsd = None
         _enabled = False
 
+    if os.getenv("DD_LLMOBS_ENABLED", "0") == "1":
+        try:
+            from ddtrace.llmobs import LLMObs  # type: ignore
+
+            LLMObs.enable(
+                ml_app=os.getenv("DD_LLMOBS_ML_APP", "mindmesh"),
+                api_key=os.getenv("DD_API_KEY"),
+                site=os.getenv("DD_SITE", "datadoghq.com"),
+                agentless_enabled=os.getenv("DD_LLMOBS_AGENTLESS_ENABLED", "0") == "1",
+            )
+            _llmobs = LLMObs
+            _llmobs_enabled = True
+            print(
+                f"[datadog] LLM Observability enabled "
+                f"(ml_app={os.getenv('DD_LLMOBS_ML_APP', 'mindmesh')}, "
+                f"agentless={os.getenv('DD_LLMOBS_AGENTLESS_ENABLED', '0')})"
+            )
+        except Exception as exc:
+            print(f"[datadog] LLMObs disabled ({exc.__class__.__name__}: {exc})")
+            _llmobs = None
+            _llmobs_enabled = False
+
 
 _init()
 
 
 def is_enabled() -> bool:
     return _enabled
+
+
+def is_llmobs_enabled() -> bool:
+    return _llmobs_enabled
 
 
 @contextlib.contextmanager
@@ -71,6 +99,45 @@ def trace(operation: str, service: str = "mindmesh", **tags: str) -> Iterator[No
         elapsed_ms = (time.perf_counter() - start) * 1000
         if os.getenv("MINDMESH_TRACE_LOG", "false").lower() == "true":
             print(f"[trace] {operation} {elapsed_ms:.1f}ms")
+
+
+@contextlib.contextmanager
+def llm_workflow(name: str, session_id: str | None = None) -> Iterator[None]:
+    """LLM Observability workflow span (covers the whole pipeline run)."""
+    if _llmobs_enabled and _llmobs is not None:
+        with _llmobs.workflow(name=name) as span:
+            if session_id:
+                _llmobs.annotate(span=span, tags={"session_id": session_id})
+            yield
+        return
+    yield
+
+
+@contextlib.contextmanager
+def llm_agent(name: str, session_id: str | None = None) -> Iterator[None]:
+    """LLM Observability agent span (one per agent call)."""
+    if _llmobs_enabled and _llmobs is not None:
+        with _llmobs.agent(name=name) as span:
+            if session_id:
+                _llmobs.annotate(span=span, tags={"session_id": session_id})
+            yield
+        return
+    yield
+
+
+def annotate_llm_span(
+    input_data: object | None = None,
+    output_data: object | None = None,
+    tags: dict | None = None,
+) -> None:
+    """Attach input/output payload + tags to the currently-active LLMObs span."""
+    if not (_llmobs_enabled and _llmobs is not None):
+        return
+    try:
+        _llmobs.annotate(input_data=input_data, output_data=output_data, tags=tags or {})
+    except Exception as exc:
+        if os.getenv("MINDMESH_TRACE_LOG", "false").lower() == "true":
+            print(f"[llmobs] annotate failed: {exc}")
 
 
 def gauge(metric: str, value: float, tags: list[str] | None = None) -> None:

@@ -23,11 +23,45 @@ if db_client.enabled:
     db_client.init_schema()
 
 
+_AGENT_OUTPUT_FIELDS = {
+    "emotion": "emotion",
+    "risk": "risk",
+    "intervention": "intervention",
+    "reflection": "reflection",
+}
+
+
+def _agent_input_snapshot(orch) -> dict:
+    return {
+        "session_id": orch.session_id,
+        "journal_text": orch.signal.journal_text,
+        "typing_speed": orch.signal.typing_speed,
+        "deletion_frequency": orch.signal.deletion_frequency,
+        "burst_typing": orch.signal.burst_typing,
+        "history_size": len(orch.history),
+    }
+
+
+def _agent_output_snapshot(orch, agent_name: str) -> dict:
+    field = _AGENT_OUTPUT_FIELDS.get(agent_name)
+    if not field:
+        return {}
+    value = getattr(orch, field, None)
+    return value.model_dump() if value is not None else {}
+
+
 async def _run_traced(agent_name: str, agent, state_dict: dict) -> dict:
     orch = to_orchestration_state(state_dict)
     start = time.perf_counter()
     with dd.trace(f"agent.{agent_name}", agent=agent_name, session_id=orch.session_id):
-        orch = await agent.run(orch)
+        with dd.llm_agent(name=f"mindmesh.{agent_name}", session_id=orch.session_id):
+            input_snapshot = _agent_input_snapshot(orch)
+            orch = await agent.run(orch)
+            dd.annotate_llm_span(
+                input_data=input_snapshot,
+                output_data=_agent_output_snapshot(orch, agent_name),
+                tags={"agent": agent_name, "session_id": orch.session_id},
+            )
     elapsed_ms = (time.perf_counter() - start) * 1000
     dd.record_agent_latency(agent_name, elapsed_ms)
     result = from_orchestration_state(orch)
@@ -55,8 +89,15 @@ async def risk_node(state: dict) -> dict:
     orch = to_orchestration_state(state)
     start = time.perf_counter()
     with dd.trace("agent.risk", agent="risk", session_id=orch.session_id):
-        orch = await risk_agent.run(orch)
-        orch = update_monitoring_level(orch)
+        with dd.llm_agent(name="mindmesh.risk", session_id=orch.session_id):
+            input_snapshot = _agent_input_snapshot(orch)
+            orch = await risk_agent.run(orch)
+            orch = update_monitoring_level(orch)
+            dd.annotate_llm_span(
+                input_data=input_snapshot,
+                output_data=_agent_output_snapshot(orch, "risk"),
+                tags={"agent": "risk", "session_id": orch.session_id},
+            )
     dd.record_agent_latency("risk", (time.perf_counter() - start) * 1000)
     result = from_orchestration_state(orch)
     result["senso_enrichment"] = state.get("senso_enrichment")

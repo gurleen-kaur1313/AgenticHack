@@ -71,8 +71,18 @@ def _serialize_pipeline_result(result: dict) -> dict:
 
 
 async def _run_pipeline(session_id: str, state: dict) -> dict:
-    result = await pipeline.ainvoke(state)
-    payload = _serialize_pipeline_result(result)
+    with dd.llm_workflow(name="mindmesh.pipeline", session_id=session_id):
+        result = await pipeline.ainvoke(state)
+        payload = _serialize_pipeline_result(result)
+        dd.annotate_llm_span(
+            input_data={"journal_text": state["signal"].journal_text},
+            output_data={
+                "monitoring_level": payload["monitoring_level"],
+                "risk_level": (payload["risk"] or {}).get("risk_level"),
+                "intervention": (payload["intervention"] or {}).get("intervention"),
+            },
+            tags={"session_id": session_id},
+        )
     _session_cache[session_id] = payload
     return payload
 
@@ -108,6 +118,7 @@ async def health():
         "integrations": {
             "clickhouse": db_client.enabled,
             "datadog": dd.is_enabled(),
+            "datadog_llmobs": dd.is_llmobs_enabled(),
             "senso": senso_module.is_enabled(),
         },
     }
