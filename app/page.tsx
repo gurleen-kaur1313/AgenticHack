@@ -102,6 +102,7 @@ type HistoryAnswer = {
 };
 
 const MIN_WORDS_TO_ANALYZE = 5;
+const TYPING_DEBOUNCE_MS = 1500;
 const initialTimelineTimestamp = "--:--:--";
 
 const initialAgents: DemoAgent[] = [
@@ -216,7 +217,7 @@ export default function Home() {
   }, []);
 
   const runWorkflow = useCallback(
-    async () => {
+    async (trigger: "manual" | "auto" = "manual") => {
       if (!hasEnoughContent || workflowActive) {
         return;
       }
@@ -256,7 +257,9 @@ export default function Home() {
 
       addTimeline(
         "Orchestrator",
-        "Manual journal analysis requested.",
+        trigger === "auto"
+          ? "Auto-analysis triggered from journal signal."
+          : "Manual journal analysis requested.",
         "risk",
       );
 
@@ -418,7 +421,18 @@ export default function Home() {
         }, 4550),
       );
     },
-    [addTimeline, deleteCount, idleSeconds, journalText, resetTimers, sessionId, typingSpeed, updateAgent]
+    [
+      addTimeline,
+      deleteCount,
+      hasEnoughContent,
+      idleSeconds,
+      journalText,
+      resetTimers,
+      sessionId,
+      typingSpeed,
+      updateAgent,
+      workflowActive,
+    ],
   );
 
   const answerHistoryQuestion = useCallback(
@@ -513,7 +527,7 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen overflow-hidden bg-background text-foreground">
+    <main className="min-h-screen overflow-x-hidden bg-background text-foreground">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_18%_12%,rgba(124,58,237,0.24),transparent_28%),radial-gradient(circle_at_82%_8%,rgba(14,165,233,0.18),transparent_26%),radial-gradient(circle_at_55%_86%,rgba(45,212,191,0.14),transparent_30%)]" />
       <div className="pointer-events-none fixed inset-0 bg-[linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] bg-[size:44px_44px] opacity-30" />
 
@@ -636,13 +650,11 @@ export default function Home() {
             </CardHeader>
             <CardContent className="grid gap-4 lg:grid-cols-[1fr_0.9fr]">
               <div className="space-y-3">
-                {agents.map((agent, index) => (
+                {agents.map((agent) => (
                   <motion.div
                     key={agent.id}
                     layout
-                    initial={{ opacity: 0, y: 14 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: index * 0.06 }}
+                    initial={false}
                     className={cn(
                       "relative overflow-hidden rounded-lg border bg-slate-950/55 p-4",
                       agent.status === "running"
@@ -733,48 +745,7 @@ export default function Home() {
               </CardHeader>
               <CardContent className="space-y-5">
                 <ScoreGrid output={output} />
-                <div>
-                  <div className="mb-2 flex items-center justify-between">
-                    <p className="text-xs font-medium text-slate-300">Score trends over session</p>
-                    <div className="flex items-center gap-3 text-[11px] text-slate-400">
-                      <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-400 inline-block" />Mood ↑ better</span>
-                      <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-violet-400 inline-block" />Stress ↑ worse</span>
-                      <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-sky-400 inline-block" />Anxiety ↑ worse</span>
-                    </div>
-                  </div>
-                  <div className="h-44">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={trendData}>
-                        <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
-                        <XAxis dataKey="time" stroke="rgba(255,255,255,0.38)" tickLine={false} axisLine={false} tick={{ fontSize: 10 }} />
-                        <YAxis stroke="rgba(255,255,255,0.38)" tickLine={false} axisLine={false} domain={[0, 100]} tick={{ fontSize: 10 }} tickFormatter={(v: number) => `${v}`} />
-                        <Tooltip content={<ChartTooltip />} />
-                        <Line type="monotone" dataKey="mood" name="Mood" stroke="#34d399" strokeWidth={2} dot={false} />
-                        <Line type="monotone" dataKey="stress" name="Stress" stroke="#a78bfa" strokeWidth={2} dot={false} />
-                        <Line type="monotone" dataKey="anxiety" name="Anxiety" stroke="#38bdf8" strokeWidth={2} dot={false} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-                <div>
-                  <p className="mb-2 text-xs font-medium text-slate-300">Stress intensity over time</p>
-                  <div className="h-28">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={trendData}>
-                        <defs>
-                          <linearGradient id="stressArea" x1="0" x2="0" y1="0" y2="1">
-                            <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.5} />
-                            <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
-                        <XAxis dataKey="time" hide />
-                        <YAxis hide domain={[0, 100]} />
-                        <Tooltip content={<ChartTooltip />} />
-                        <Area type="monotone" dataKey="stress" name="Stress" stroke="#8b5cf6" fill="url(#stressArea)" strokeWidth={2} />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
+                <SessionTrendCharts data={trendData} />
               </CardContent>
             </Card>
 
@@ -784,10 +755,10 @@ export default function Home() {
                 <Waves className="h-4 w-4 text-teal-300" />
               </CardHeader>
               <CardContent>
-                <AnimatePresence mode="wait">
+                <AnimatePresence mode="wait" initial={false}>
                   <motion.div
                     key={output.intervention?.id}
-                    initial={{ opacity: 0, y: 10 }}
+                    initial={false}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -10 }}
                     className="rounded-lg border border-teal-300/25 bg-teal-300/10 p-4"
@@ -1035,6 +1006,78 @@ function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: 
         </p>
       ))}
     </div>
+  );
+}
+
+function SessionTrendCharts({ data }: { data: MoodPoint[] }) {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  return (
+    <>
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-xs font-medium text-slate-300">Score trends over session</p>
+          <div className="flex items-center gap-3 text-[11px] text-slate-400">
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
+              Mood ↑ better
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-2 w-2 rounded-full bg-violet-400" />
+              Stress ↑ worse
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-2 w-2 rounded-full bg-sky-400" />
+              Anxiety ↑ worse
+            </span>
+          </div>
+        </div>
+        <div className="h-44 min-h-[11rem] w-full min-w-0">
+          {mounted ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={data}>
+                <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
+                <XAxis dataKey="time" stroke="rgba(255,255,255,0.38)" tickLine={false} axisLine={false} tick={{ fontSize: 10 }} />
+                <YAxis stroke="rgba(255,255,255,0.38)" tickLine={false} axisLine={false} domain={[0, 100]} tick={{ fontSize: 10 }} tickFormatter={(v: number) => `${v}`} />
+                <Tooltip content={<ChartTooltip />} />
+                <Line type="monotone" dataKey="mood" name="Mood" stroke="#34d399" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="stress" name="Stress" stroke="#a78bfa" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="anxiety" name="Anxiety" stroke="#38bdf8" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-full w-full animate-pulse rounded-lg bg-white/[0.04]" />
+          )}
+        </div>
+      </div>
+      <div>
+        <p className="mb-2 text-xs font-medium text-slate-300">Stress intensity over time</p>
+        <div className="h-28 min-h-[7rem] w-full min-w-0">
+          {mounted ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data}>
+                <defs>
+                  <linearGradient id="stressArea" x1="0" x2="0" y1="0" y2="1">
+                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.5} />
+                    <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="time" hide />
+                <YAxis hide domain={[0, 100]} />
+                <Tooltip content={<ChartTooltip />} />
+                <Area type="monotone" dataKey="stress" name="Stress" stroke="#8b5cf6" fill="url(#stressArea)" strokeWidth={2} />
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-full w-full animate-pulse rounded-lg bg-white/[0.04]" />
+          )}
+        </div>
+      </div>
+    </>
   );
 }
 
