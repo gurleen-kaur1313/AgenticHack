@@ -1,17 +1,24 @@
 import json
 import os
 
-import openai
 from dotenv import load_dotenv
+try:
+    import openai
+except ImportError:  # pragma: no cover - exercised when running offline without deps
+    openai = None
 
 load_dotenv()
 
-client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+api_key = os.getenv("OPENAI_API_KEY")
+client = openai.OpenAI(api_key=api_key) if openai and api_key else None
 MODEL = os.getenv("MODEL_NAME", "gpt-4o")
 
 
 async def llm_call(system_prompt: str, user_prompt: str) -> str:
     """Shared LLM caller. All agents use this."""
+    if client is None:
+        raise RuntimeError("OpenAI client is not configured")
+
     last_error: Exception | None = None
     for attempt in range(2):
         try:
